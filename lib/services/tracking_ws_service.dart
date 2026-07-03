@@ -33,7 +33,7 @@ class TecnicoLocation {
       );
 }
 
-/// Mensaje entrante del chat cliente ↔ técnico durante una solicitud.
+/// Mensaje entrante del chat cliente ↔ técnico/taller durante una solicitud.
 class ChatMessageEvent {
   const ChatMessageEvent({
     required this.solicitudId,
@@ -43,18 +43,29 @@ class ChatMessageEvent {
     required this.senderDisplayName,
     required this.content,
     this.createdAt,
+    this.audioUrl,
+    this.audioContentType,
+    this.audioDurationMs,
+    this.audioSizeBytes,
   });
 
   final int solicitudId;
   final int messageId;
   final int senderUserId;
-  final String senderRole; // 'cliente' | 'tecnico'
+  final String senderRole; // 'cliente' | 'tecnico' | 'taller'
   final String senderDisplayName;
   final String content;
   final String? createdAt;
+  final String? audioUrl;
+  final String? audioContentType;
+  final int? audioDurationMs;
+  final int? audioSizeBytes;
+
+  bool get hasAudio => (audioUrl != null && audioUrl!.isNotEmpty);
 
   factory ChatMessageEvent.fromJson(Map<String, dynamic> json) {
     final msg = (json['message'] as Map?)?.cast<String, dynamic>() ?? const <String, dynamic>{};
+    final audio = (msg['audio'] as Map?)?.cast<String, dynamic>();
     return ChatMessageEvent(
       solicitudId: (json['solicitud_id'] as num?)?.toInt() ?? 0,
       messageId: (msg['id'] as num?)?.toInt() ?? 0,
@@ -63,6 +74,10 @@ class ChatMessageEvent {
       senderDisplayName: (msg['sender_display_name'] as String?) ?? '',
       content: (msg['content'] as String?) ?? '',
       createdAt: msg['created_at'] as String?,
+      audioUrl: audio?['url'] as String?,
+      audioContentType: audio?['content_type'] as String?,
+      audioDurationMs: (audio?['duration_ms'] as num?)?.toInt(),
+      audioSizeBytes: (audio?['size_bytes'] as num?)?.toInt(),
     );
   }
 }

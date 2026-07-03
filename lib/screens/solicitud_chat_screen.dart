@@ -1,8 +1,14 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
+import 'package:record/record.dart';
 
 import '../providers/session_provider.dart';
 import '../services/chat_solicitud_service.dart';
@@ -45,10 +51,19 @@ class _SolicitudChatScreenState extends State<SolicitudChatScreen> {
   final TextEditingController _inputCtrl = TextEditingController();
   final ScrollController _scrollCtrl = ScrollController();
   final List<SolicitudChatMessage> _messages = <SolicitudChatMessage>[];
+  final AudioRecorder _recorder = AudioRecorder();
   bool _loading = false;
   bool _sending = false;
+  bool _recording = false;
+  DateTime? _recordingStartedAt;
+  Timer? _recordingTicker;
+  Duration _recordingElapsed = Duration.zero;
+  String? _recordingPath;
   String? _error;
   StreamSubscription<ChatMessageEvent>? _wsSub;
+  /// Reproductor único compartido — pausamos el anterior al tocar otro.
+  final AudioPlayer _player = AudioPlayer();
+  int? _currentlyPlayingMessageId;
 
   /// Rol del usuario en sesión ('cliente' | 'tecnico' | 'taller') para
   /// decidir qué burbujas dibujar como "mías". En el modelo actual, un
@@ -74,6 +89,9 @@ class _SolicitudChatScreenState extends State<SolicitudChatScreen> {
     _service.dispose();
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
+    _recordingTicker?.cancel();
+    _recorder.dispose();
+    _player.dispose();
     super.dispose();
   }
 
@@ -91,6 +109,14 @@ class _SolicitudChatScreenState extends State<SolicitudChatScreen> {
       createdAt: ev.createdAt != null
           ? (DateTime.tryParse(ev.createdAt!)?.toLocal() ?? DateTime.now())
           : DateTime.now(),
+      audio: ev.hasAudio
+          ? SolicitudChatAudioInfo(
+              contentType: ev.audioContentType ?? 'audio/mp4',
+              sizeBytes: ev.audioSizeBytes ?? 0,
+              durationMs: ev.audioDurationMs,
+              url: ev.audioUrl!,
+            )
+          : null,
     );
     setState(() => _messages.add(incoming));
     _scrollAlFinal();
@@ -189,6 +215,165 @@ class _SolicitudChatScreenState extends State<SolicitudChatScreen> {
     }
   }
 
+  // ── Grabación de nota de voz ─────────────────────────────────────────
+
+  Future<void> _iniciarGrabacion() async {
+    if (widget.readOnly || _recording || _sending) return;
+    // Permiso de micrófono. record ya pide en la mayoría de casos, pero
+    // permission_handler nos deja mostrar mensaje si el usuario negó.
+    final micStatus = await Permission.microphone.request();
+    if (!micStatus.isGranted) {
+      if (!mounted) return;
+      setState(() => _error = 'Necesitás dar permiso de micrófono para grabar notas de voz.');
+      return;
+    }
+    if (!await _recorder.hasPermission()) {
+      if (!mounted) return;
+      setState(() => _error = 'El micrófono no está disponible.');
+      return;
+    }
+
+    try {
+      final dir = await getTemporaryDirectory();
+      final path = '${dir.path}/chat_voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
+      await _recorder.start(
+        const RecordConfig(
+          encoder: AudioEncoder.aacLc,
+          bitRate: 96000,
+          sampleRate: 44100,
+        ),
+        path: path,
+      );
+      _recordingPath = path;
+      _recordingStartedAt = DateTime.now();
+      _recordingElapsed = Duration.zero;
+      _recordingTicker?.cancel();
+      _recordingTicker = Timer.periodic(const Duration(milliseconds: 250), (_) {
+        if (_recordingStartedAt == null) return;
+        setState(() {
+          _recordingElapsed = DateTime.now().difference(_recordingStartedAt!);
+        });
+        // Corte de seguridad a 2 min (matches backend _AUDIO_MAX_BYTES).
+        if (_recordingElapsed.inSeconds >= 120) {
+          _detenerYEnviar();
+        }
+      });
+      if (!mounted) return;
+      setState(() {
+        _recording = true;
+        _error = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = 'No se pudo iniciar la grabación.');
+    }
+  }
+
+  Future<void> _detenerYEnviar() async {
+    if (!_recording) return;
+    _recordingTicker?.cancel();
+    _recordingTicker = null;
+    final duration = _recordingElapsed;
+    final path = await _recorder.stop();
+    _recordingStartedAt = null;
+    if (!mounted) return;
+    setState(() {
+      _recording = false;
+      _recordingElapsed = Duration.zero;
+    });
+
+    final effectivePath = path ?? _recordingPath;
+    _recordingPath = null;
+    if (effectivePath == null) return;
+    final file = File(effectivePath);
+    if (!await file.exists()) return;
+
+    final token = context.read<SessionProvider>().token;
+    if (token == null || token.isEmpty) return;
+    setState(() => _sending = true);
+    try {
+      final msg = await _service.enviarAudio(
+        token: token,
+        solicitudId: widget.solicitudId,
+        file: file,
+        contentType: 'audio/mp4',
+        durationMs: duration.inMilliseconds > 0 ? duration.inMilliseconds : null,
+        tenantKey: widget.tenantKey,
+      );
+      if (!mounted) return;
+      setState(() {
+        if (_messages.every((m) => m.id != msg.id)) {
+          _messages.add(msg);
+        }
+      });
+      _scrollAlFinal();
+    } on ChatSolicitudException catch (e) {
+      if (!mounted) return;
+      setState(() => _error = e.message);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _error = 'No se pudo enviar la nota de voz.');
+    } finally {
+      if (mounted) setState(() => _sending = false);
+      // Limpiamos el archivo temporal.
+      try { await file.delete(); } catch (_) {}
+    }
+  }
+
+  Future<void> _cancelarGrabacion() async {
+    if (!_recording) return;
+    _recordingTicker?.cancel();
+    _recordingTicker = null;
+    try {
+      final path = await _recorder.stop();
+      if (path != null) {
+        try { await File(path).delete(); } catch (_) {}
+      }
+    } catch (_) {}
+    _recordingPath = null;
+    _recordingStartedAt = null;
+    if (!mounted) return;
+    setState(() {
+      _recording = false;
+      _recordingElapsed = Duration.zero;
+    });
+  }
+
+  // ── Playback de audio recibido ───────────────────────────────────────
+
+  Future<void> _reproducirAudio(SolicitudChatMessage msg) async {
+    if (msg.audio == null) return;
+    final token = context.read<SessionProvider>().token;
+    if (token == null || token.isEmpty) return;
+
+    // Si ya estamos reproduciendo este mensaje → pausa.
+    if (_currentlyPlayingMessageId == msg.id) {
+      await _player.pause();
+      setState(() => _currentlyPlayingMessageId = null);
+      return;
+    }
+    try {
+      await _player.stop();
+      final bytes = await _service.descargarAudioBytes(
+        token: token,
+        solicitudId: msg.solicitudId,
+        messageId: msg.id,
+        tenantKey: widget.tenantKey,
+      );
+      await _player.play(BytesSource(Uint8List.fromList(bytes)));
+      if (!mounted) return;
+      setState(() => _currentlyPlayingMessageId = msg.id);
+      // Cuando termina, limpiamos el estado.
+      _player.onPlayerComplete.first.then((_) {
+        if (!mounted) return;
+        setState(() => _currentlyPlayingMessageId = null);
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _error = 'No se pudo reproducir la nota de voz.');
+    }
+  }
+
   void _scrollAlFinal() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollCtrl.hasClients) return;
@@ -242,7 +427,12 @@ class _SolicitudChatScreenState extends State<SolicitudChatScreen> {
                           itemBuilder: (context, index) {
                             final msg = _messages[index];
                             final esMio = myRole != null && msg.senderRole == myRole;
-                            return _MessageBubble(message: msg, esMio: esMio);
+                            return _MessageBubble(
+                              message: msg,
+                              esMio: esMio,
+                              isPlaying: _currentlyPlayingMessageId == msg.id,
+                              onTogglePlay: msg.audio != null ? () => _reproducirAudio(msg) : null,
+                            );
                           },
                         ),
             ),
@@ -256,16 +446,47 @@ class _SolicitudChatScreenState extends State<SolicitudChatScreen> {
                   style: const TextStyle(color: AppColors.error, fontSize: 12),
                 ),
               ),
+            if (_recording)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                color: AppColors.errorLight,
+                child: Row(
+                  children: [
+                    const Icon(Icons.fiber_manual_record, size: 14, color: AppColors.error),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Grabando… ${_formatDuration(_recordingElapsed)}',
+                      style: const TextStyle(color: AppColors.error, fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: _cancelarGrabacion,
+                      child: const Text('Cancelar', style: TextStyle(color: AppColors.error)),
+                    ),
+                  ],
+                ),
+              ),
             _Composer(
               controller: _inputCtrl,
-              enabled: !widget.readOnly && !_sending,
+              enabled: !widget.readOnly && !_sending && !_recording,
+              recording: _recording,
               onSend: _enviar,
+              onMicPressStart: _iniciarGrabacion,
+              onMicPressEnd: _detenerYEnviar,
             ),
           ],
         ),
       ),
     );
   }
+}
+
+
+String _formatDuration(Duration d) {
+  final mm = d.inMinutes.remainder(60).toString();
+  final ss = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+  return '$mm:$ss';
 }
 
 
@@ -298,10 +519,17 @@ class _EmptyChat extends StatelessWidget {
 
 
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message, required this.esMio});
+  const _MessageBubble({
+    required this.message,
+    required this.esMio,
+    this.isPlaying = false,
+    this.onTogglePlay,
+  });
 
   final SolicitudChatMessage message;
   final bool esMio;
+  final bool isPlaying;
+  final VoidCallback? onTogglePlay;
 
   @override
   Widget build(BuildContext context) {
@@ -346,10 +574,47 @@ class _MessageBubble extends StatelessWidget {
                         ),
                       ),
                     ),
-                  Text(
-                    message.content,
-                    style: TextStyle(color: fg, fontSize: 14, height: 1.35),
-                  ),
+                  if (message.audio != null)
+                    // Burbuja de audio: botón play/pause + duración.
+                    InkWell(
+                      onTap: onTogglePlay,
+                      borderRadius: BorderRadius.circular(20),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 34,
+                              height: 34,
+                              decoration: BoxDecoration(
+                                color: fg.withValues(alpha: 0.15),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Icon(
+                                isPlaying ? Icons.pause : Icons.play_arrow,
+                                color: fg,
+                                size: 22,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Icon(Icons.mic, size: 16, color: fg.withValues(alpha: 0.8)),
+                            const SizedBox(width: 4),
+                            Text(
+                              message.audio!.durationMs != null
+                                  ? _formatDuration(Duration(milliseconds: message.audio!.durationMs!))
+                                  : 'Nota de voz',
+                              style: TextStyle(color: fg, fontSize: 13, fontWeight: FontWeight.w500),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  if (message.audio == null && message.content.isNotEmpty)
+                    Text(
+                      message.content,
+                      style: TextStyle(color: fg, fontSize: 14, height: 1.35),
+                    ),
                   const SizedBox(height: 4),
                   Text(
                     hora,
@@ -374,11 +639,17 @@ class _Composer extends StatelessWidget {
     required this.controller,
     required this.enabled,
     required this.onSend,
+    this.recording = false,
+    this.onMicPressStart,
+    this.onMicPressEnd,
   });
 
   final TextEditingController controller;
   final bool enabled;
+  final bool recording;
   final VoidCallback onSend;
+  final VoidCallback? onMicPressStart;
+  final VoidCallback? onMicPressEnd;
 
   @override
   Widget build(BuildContext context) {
@@ -401,7 +672,11 @@ class _Composer extends StatelessWidget {
               textInputAction: TextInputAction.send,
               onSubmitted: (_) => onSend(),
               decoration: InputDecoration(
-                hintText: enabled ? 'Escribe un mensaje…' : 'Chat solo lectura',
+                hintText: recording
+                    ? 'Grabando nota de voz…'
+                    : enabled
+                        ? 'Escribe un mensaje…'
+                        : 'Chat solo lectura',
                 filled: true,
                 fillColor: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
                 border: OutlineInputBorder(
@@ -412,7 +687,38 @@ class _Composer extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 6),
+          // Mic: press-and-hold para grabar; soltar → detener y enviar.
+          if (onMicPressStart != null)
+            GestureDetector(
+              onLongPressStart: (_) {
+                if (enabled) onMicPressStart!();
+              },
+              onLongPressEnd: (_) {
+                if (recording) onMicPressEnd!();
+              },
+              // Tap corto: también funciona como toggle para accesibilidad.
+              onTap: () {
+                if (recording) {
+                  onMicPressEnd?.call();
+                } else if (enabled) {
+                  onMicPressStart?.call();
+                }
+              },
+              child: Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: recording ? AppColors.error : Colors.grey.shade600,
+                ),
+                child: Icon(
+                  recording ? Icons.stop : Icons.mic,
+                  size: 20,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          const SizedBox(width: 6),
           FilledButton(
             onPressed: enabled ? onSend : null,
             style: FilledButton.styleFrom(
