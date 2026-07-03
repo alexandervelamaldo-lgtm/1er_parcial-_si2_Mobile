@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "421279652666",
+    "project_id": "apk2doparcialsi2",
+    "storage_bucket": "apk2doparcialsi2.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:421279652666:android:8f2906235d65a1360ace03",
+        "android_client_info": {
+          "package_name": "com.example.emergency_mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBoiyAG1OnO22RxXs4OrZRJ1TE8om8I-ro"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
