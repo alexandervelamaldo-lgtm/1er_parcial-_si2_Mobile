@@ -45,14 +45,14 @@ class _SolicitudChatScreenState extends State<SolicitudChatScreen> {
   String? _error;
   StreamSubscription<ChatMessageEvent>? _wsSub;
 
-  /// Rol del usuario en sesión ('cliente' | 'tecnico') para decidir qué
-  /// burbujas dibujar como "mías". Tomamos el primero que aparezca, ya
-  /// que en el modelo actual nunca conviven CLIENTE y TECNICO en el
-  /// mismo usuario para una misma solicitud.
+  /// Rol del usuario en sesión ('cliente' | 'tecnico' | 'taller') para
+  /// decidir qué burbujas dibujar como "mías". En el modelo actual, un
+  /// mismo usuario no combina esos roles para una misma solicitud.
   String? _myRoleInChat() {
     final roles = context.read<SessionProvider>().profile?.roles ?? const <String>[];
     if (roles.contains('CLIENTE')) return 'cliente';
     if (roles.contains('TECNICO')) return 'tecnico';
+    if (roles.contains('TALLER')) return 'taller';
     return null;
   }
 

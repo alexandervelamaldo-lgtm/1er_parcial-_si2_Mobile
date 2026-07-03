@@ -306,13 +306,14 @@ class _SolicitudDetalleScreenState extends State<SolicitudDetalleScreen> {
       appBar: AppBar(
         title: Text('Solicitud #${widget.solicitudId}'),
         actions: [
-          // Chat en vivo con el técnico asignado. Habilitamos el botón
-          // siempre que la solicitud ya tenga técnico; el backend igual
-          // valida acceso y devuelve 403 si el usuario no es la parte
-          // autorizada.
-          if (detalle != null && detalle.tecnicoId != null)
+          // Chat en vivo con el otro lado. El cliente lo abre contra el
+          // técnico (si ya se asignó) o contra el taller (etapa previa).
+          // El backend valida acceso y devuelve 403 si el usuario no es
+          // participante autorizado.
+          if (detalle != null &&
+              (detalle.tecnicoId != null || detalle.tallerId != null))
             IconButton(
-              tooltip: 'Chat con el técnico',
+              tooltip: detalle.tecnicoId != null ? 'Chat con el técnico' : 'Chat con el taller',
               icon: const Icon(Icons.chat_bubble_outline),
               onPressed: () {
                 final estado = detalle.estado.toUpperCase();
@@ -322,12 +323,25 @@ class _SolicitudDetalleScreenState extends State<SolicitudDetalleScreen> {
                   'FINALIZADA',
                   'CANCELADA',
                 }.contains(estado);
+                // Rol del usuario en sesión → determina a quién llamamos
+                // "contraparte" en el header del chat.
+                final roles = context.read<SessionProvider>().profile?.roles ?? const <String>[];
+                final soyCliente = roles.contains('CLIENTE');
+                final soyTaller = roles.contains('TALLER');
+                String contraparte;
+                if (soyCliente) {
+                  contraparte = detalle.tecnicoId != null ? 'técnico' : 'taller';
+                } else if (soyTaller) {
+                  contraparte = 'cliente';
+                } else {
+                  contraparte = 'cliente';
+                }
                 Navigator.push(
                   context,
                   MaterialPageRoute(
                     builder: (_) => SolicitudChatScreen(
                       solicitudId: widget.solicitudId,
-                      contraparteLabel: 'técnico',
+                      contraparteLabel: contraparte,
                       readOnly: readOnly,
                       readOnlyReason: readOnly
                           ? 'Esta solicitud ya cerró. Solo se muestra el historial.'
