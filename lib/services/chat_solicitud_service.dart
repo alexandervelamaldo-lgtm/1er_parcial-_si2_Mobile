@@ -66,21 +66,30 @@ class ChatSolicitudService {
     return Uri.parse('$base$normalized');
   }
 
-  Map<String, String> _headers(String token) => {
-        'Authorization': 'Bearer $token',
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      };
+  Map<String, String> _headers(String token, String? tenantKey) {
+    final headers = <String, String>{
+      'Authorization': 'Bearer $token',
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    };
+    // Multi-tenant: la solicitud puede vivir en la DB del taller (tenant
+    // distinto al del cliente). El caller nos pasa el tenantKey correcto
+    // para que el backend enrute la request a la DB adecuada.
+    final tk = (tenantKey ?? '').trim();
+    if (tk.isNotEmpty) headers['X-Tenant'] = tk;
+    return headers;
+  }
 
   Future<List<SolicitudChatMessage>> listar({
     required String token,
     required int solicitudId,
+    String? tenantKey,
     int? sinceId,
   }) async {
     final query = sinceId != null ? '?since_id=$sinceId' : '';
     final res = await _client.get(
       _uri('/solicitudes/$solicitudId/chat/messages$query'),
-      headers: _headers(token),
+      headers: _headers(token, tenantKey),
     );
     _ensureOk(res);
     final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
@@ -95,10 +104,11 @@ class ChatSolicitudService {
     required String token,
     required int solicitudId,
     required String content,
+    String? tenantKey,
   }) async {
     final res = await _client.post(
       _uri('/solicitudes/$solicitudId/chat/messages'),
-      headers: _headers(token),
+      headers: _headers(token, tenantKey),
       body: jsonEncode({'content': content}),
     );
     _ensureOk(res);
@@ -110,10 +120,11 @@ class ChatSolicitudService {
   Future<int> marcarLeidos({
     required String token,
     required int solicitudId,
+    String? tenantKey,
   }) async {
     final res = await _client.post(
       _uri('/solicitudes/$solicitudId/chat/read'),
-      headers: _headers(token),
+      headers: _headers(token, tenantKey),
     );
     _ensureOk(res);
     final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;

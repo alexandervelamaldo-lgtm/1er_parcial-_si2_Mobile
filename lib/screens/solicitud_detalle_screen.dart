@@ -342,6 +342,7 @@ class _SolicitudDetalleScreenState extends State<SolicitudDetalleScreen> {
                     builder: (_) => SolicitudChatScreen(
                       solicitudId: widget.solicitudId,
                       contraparteLabel: contraparte,
+                      tenantKey: widget.tenantKey,
                       readOnly: readOnly,
                       readOnlyReason: readOnly
                           ? 'Esta solicitud ya cerró. Solo se muestra el historial.'

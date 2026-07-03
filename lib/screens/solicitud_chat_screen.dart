@@ -20,6 +20,7 @@ class SolicitudChatScreen extends StatefulWidget {
     super.key,
     required this.solicitudId,
     required this.contraparteLabel,
+    this.tenantKey,
     this.readOnly = false,
     this.readOnlyReason,
   });
@@ -27,6 +28,10 @@ class SolicitudChatScreen extends StatefulWidget {
   final int solicitudId;
   /// Etiqueta del otro lado (ej. 'técnico', 'cliente') para el header.
   final String contraparteLabel;
+  /// Tenant al que pertenece la solicitud. Sin esto, requests desde el
+  /// cliente (tenant=default) contra una solicitud del taller (llaneros)
+  /// dan 404. Se pasa como X-Tenant en cada request.
+  final String? tenantKey;
   final bool readOnly;
   final String? readOnlyReason;
 
@@ -107,7 +112,11 @@ class _SolicitudChatScreenState extends State<SolicitudChatScreen> {
       _error = null;
     });
     try {
-      final res = await _service.listar(token: token, solicitudId: widget.solicitudId);
+      final res = await _service.listar(
+        token: token,
+        solicitudId: widget.solicitudId,
+        tenantKey: widget.tenantKey,
+      );
       if (!mounted) return;
       setState(() {
         _messages
@@ -145,6 +154,7 @@ class _SolicitudChatScreenState extends State<SolicitudChatScreen> {
         token: token,
         solicitudId: widget.solicitudId,
         content: texto,
+        tenantKey: widget.tenantKey,
       );
       if (!mounted) return;
       setState(() {
@@ -169,7 +179,11 @@ class _SolicitudChatScreenState extends State<SolicitudChatScreen> {
     final token = context.read<SessionProvider>().token;
     if (token == null || token.isEmpty) return;
     try {
-      await _service.marcarLeidos(token: token, solicitudId: widget.solicitudId);
+      await _service.marcarLeidos(
+        token: token,
+        solicitudId: widget.solicitudId,
+        tenantKey: widget.tenantKey,
+      );
     } catch (_) {
       // No es crítico — silenciamos.
     }
