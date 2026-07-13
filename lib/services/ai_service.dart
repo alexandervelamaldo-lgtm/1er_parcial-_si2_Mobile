@@ -167,6 +167,18 @@ class AiService {
     return AiVoiceIntentResult.fromJson(jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>);
   }
 
+  /// Envía un mensaje al asistente conversacional (Groq) con el historial
+  /// reciente como contexto.
+  ///
+  /// - [token]: JWT del usuario autenticado. Sin él, el backend responde 401.
+  /// - [message]: la pregunta que hace el usuario en el turno actual.
+  /// - [history]: los turnos previos de la conversación. El backend
+  ///   trunca a los últimos 20; mandar más es desperdicio de red.
+  ///
+  /// Si el backend devuelve un error, extraemos el campo `detail` del
+  /// JSON de FastAPI (ej. "La clave de la API de Groq no es válida...")
+  /// y lo pasamos como mensaje de la excepción. Así la UI muestra el
+  /// motivo real (rate limit, key inválida, etc.) en vez de un genérico.
   Future<AiChatResult> chat({
     required String token,
     required String message,
@@ -181,7 +193,11 @@ class AiService {
       }),
     );
     if (res.statusCode < 200 || res.statusCode >= 300) {
+      // Default por si el backend devuelve un cuerpo raro o vacío.
       String detail = 'No se pudo contactar al asistente. Intenta de nuevo en unos momentos.';
+      // Intentamos parsear el `detail` estándar de FastAPI. `try/catch`
+      // vacío porque cualquier cosa que salga mal cae al default de arriba
+      // (JSON malformado, encoding raro, cuerpo vacío).
       try {
         final decoded = jsonDecode(utf8.decode(res.bodyBytes));
         if (decoded is Map && decoded['detail'] is String) {

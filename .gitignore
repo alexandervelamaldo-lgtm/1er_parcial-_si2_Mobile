@@ -33,6 +33,19 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Gradle build cache — autogenerado por cada build en Windows/Linux/Mac.
+# Nunca debe ir al repo, es específico de la máquina y pesa MB.
+/android/.gradle/
+/android/build/
+/android/app/build/
+
+# iOS/macOS Flutter-generated files — se regeneran con `flutter pub get`.
+/ios/Flutter/Generated.xcconfig
+/ios/Flutter/flutter_export_environment.sh
+/ios/Flutter/ephemeral/
+/macos/Flutter/ephemeral/
+/macos/Flutter/GeneratedPluginRegistrant.swift
+
 # Symbolication related
 app.*.symbols
 

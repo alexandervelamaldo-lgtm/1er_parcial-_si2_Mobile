@@ -351,6 +351,12 @@ class _DashboardTab extends StatelessWidget {
                   icon: const Icon(Icons.mic_rounded),
                   label: const Text('Reporte por voz'),
                 ),
+                // Entrada al asistente conversacional Groq. Está en el
+                // Wrap de accesos rápidos del dashboard porque en el
+                // móvil no tenemos sidebar (a diferencia del web) — cada
+                // rol usa este mismo botón, el chat siempre corre en modo
+                // "asistente general" (no admin), el análisis ejecutivo
+                // vive solo en el panel web.
                 FilledButton.tonalIcon(
                   onPressed: () {
                     Navigator.push(

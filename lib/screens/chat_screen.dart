@@ -44,6 +44,13 @@ class _ChatScreenState extends State<ChatScreen> {
     super.dispose();
   }
 
+  /// Envía el mensaje escrito al asistente Groq y añade la respuesta a la lista.
+  ///
+  /// Diseño "optimistic": el mensaje del usuario aparece INMEDIATAMENTE en la
+  /// UI mientras esperamos la respuesta del server. Eso hace que se sienta
+  /// más responsivo (no hay que esperar el round-trip para ver lo que
+  /// escribiste). Si el server falla, el mensaje queda en la conversación
+  /// (marcado como fallido) y mostramos el error abajo.
   Future<void> _enviar() async {
     final texto = _inputCtrl.text.trim();
     if (texto.isEmpty || _busy) return;
@@ -54,6 +61,7 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
 
+    // Optimistic update: burbuja del usuario ANTES de la petición.
     setState(() {
       _messages.add(_ChatMessage(role: 'user', content: texto));
       _inputCtrl.clear();
@@ -62,6 +70,13 @@ class _ChatScreenState extends State<ChatScreen> {
     });
     _scrollAlFinal();
 
+    // Preparamos el historial que mandamos al server:
+    //   1. Excluímos el ÚLTIMO mensaje (el que acabamos de agregar) —
+    //      el server lo espera en el campo `message`, no en `history`.
+    //   2. Descartamos los que fallaron (`failed`) — no aportan contexto
+    //      real y confunden al LLM.
+    //   3. Truncamos a los últimos N mensajes para no exceder el límite
+    //      del backend (AiChatRequest.history tiene max_length=40).
     final historial = _messages
         .take(_messages.length - 1)
         .where((m) => !m.failed)

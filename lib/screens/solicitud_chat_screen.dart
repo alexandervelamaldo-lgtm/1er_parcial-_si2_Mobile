@@ -217,16 +217,33 @@ class _SolicitudChatScreenState extends State<SolicitudChatScreen> {
 
   // ── Grabación de nota de voz ─────────────────────────────────────────
 
+  /// Arranca la grabación de una nota de voz.
+  ///
+  /// Requisitos:
+  ///   1. Permiso RECORD_AUDIO otorgado (Android). En iOS se pide con la
+  ///      key NSMicrophoneUsageDescription del Info.plist.
+  ///   2. Directorio temporal accesible (`getTemporaryDirectory`).
+  ///
+  /// El archivo se guarda en el temp dir con timestamp único. Se borra
+  /// solo después del upload exitoso o si el user cancela. En caso de
+  /// crash de la app queda huérfano — el SO limpia el temp dir eventual-
+  /// mente, no es un problema práctico.
   Future<void> _iniciarGrabacion() async {
     if (widget.readOnly || _recording || _sending) return;
-    // Permiso de micrófono. record ya pide en la mayoría de casos, pero
-    // permission_handler nos deja mostrar mensaje si el usuario negó.
+
+    // Pedimos el permiso PRIMERO con permission_handler porque nos
+    // permite distinguir "denegado" de "no otorgado todavía" y mostrar
+    // un mensaje amigable. `record.hasPermission()` funciona pero es
+    // más opaco en el resultado.
     final micStatus = await Permission.microphone.request();
     if (!micStatus.isGranted) {
       if (!mounted) return;
       setState(() => _error = 'Necesitás dar permiso de micrófono para grabar notas de voz.');
       return;
     }
+    // Doble check con el propio recorder — cubre casos donde el permiso
+    // fue otorgado pero el sistema bloqueó el mic por otra razón (modo
+    // low-power, mic ocupado por otra app, etc.).
     if (!await _recorder.hasPermission()) {
       if (!mounted) return;
       setState(() => _error = 'El micrófono no está disponible.');
@@ -234,8 +251,15 @@ class _SolicitudChatScreenState extends State<SolicitudChatScreen> {
     }
 
     try {
+      // getTemporaryDirectory: carpeta que iOS/Android permiten limpiar
+      // cuando necesitan espacio. Perfecto para archivos efímeros como
+      // este (se sube al server y se borra).
       final dir = await getTemporaryDirectory();
       final path = '${dir.path}/chat_voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
+      // AAC-LC a 96kbps es el sweet spot para voz:
+      //   - Compatible con <audio> HTML5 (web receptor)
+      //   - Bien soportado por audioplayers (móvil receptor)
+      //   - ~720 KB por minuto → 2 min entra en el límite de 2 MB del backend
       await _recorder.start(
         const RecordConfig(
           encoder: AudioEncoder.aacLc,
@@ -341,18 +365,33 @@ class _SolicitudChatScreenState extends State<SolicitudChatScreen> {
 
   // ── Playback de audio recibido ───────────────────────────────────────
 
+  /// Reproduce (o pausa) la nota de voz asociada al mensaje.
+  ///
+  /// Diseño con un ÚNICO AudioPlayer compartido:
+  ///   - Si el user toca otro audio mientras suena uno, el nuevo pisa al
+  ///     anterior (`stop()` antes de `play()`). Simula el comportamiento
+  ///     de WhatsApp — evita superposición y ambigüedad.
+  ///   - Si toca el mismo audio que está sonando, alterna a pausa.
+  ///   - Cuando termina naturalmente, `onPlayerComplete` limpia el estado
+  ///     para que la burbuja vuelva al ícono ▶.
+  ///
+  /// Por qué `BytesSource` en vez de URL: `audioplayers` no propaga
+  /// headers custom al ExoPlayer en Android, y necesitamos Authorization
+  /// para el endpoint del backend. Descargamos con `http` y pasamos los
+  /// bytes al player.
   Future<void> _reproducirAudio(SolicitudChatMessage msg) async {
     if (msg.audio == null) return;
     final token = context.read<SessionProvider>().token;
     if (token == null || token.isEmpty) return;
 
-    // Si ya estamos reproduciendo este mensaje → pausa.
+    // Toggle: si ya está reproduciendo este mensaje → pausa.
     if (_currentlyPlayingMessageId == msg.id) {
       await _player.pause();
       setState(() => _currentlyPlayingMessageId = null);
       return;
     }
     try {
+      // Cortamos cualquier audio anterior antes de arrancar el nuevo.
       await _player.stop();
       final bytes = await _service.descargarAudioBytes(
         token: token,
@@ -360,10 +399,14 @@ class _SolicitudChatScreenState extends State<SolicitudChatScreen> {
         messageId: msg.id,
         tenantKey: widget.tenantKey,
       );
+      // Uint8List es lo que espera BytesSource — el List<int> devuelto
+      // por http.Response.bodyBytes ya es Uint8List en runtime, pero
+      // el tipado estático es List<int>, por eso el cast explícito.
       await _player.play(BytesSource(Uint8List.fromList(bytes)));
       if (!mounted) return;
       setState(() => _currentlyPlayingMessageId = msg.id);
-      // Cuando termina, limpiamos el estado.
+      // Escuchamos SOLO el primer evento de fin — con `.first` el
+      // future se auto-desuscribe después de una emisión, evita leaks.
       _player.onPlayerComplete.first.then((_) {
         if (!mounted) return;
         setState(() => _currentlyPlayingMessageId = null);

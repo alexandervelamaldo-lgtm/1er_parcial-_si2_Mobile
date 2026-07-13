@@ -34,6 +34,16 @@ class TecnicoLocation {
 }
 
 /// Mensaje entrante del chat cliente ↔ técnico/taller durante una solicitud.
+///
+/// Este evento llega por el WS `/realtime/tracking` con `type=chat_message`.
+/// Lo emitimos en `chatMessageStream` y las pantallas del chat lo consumen
+/// filtrando por `solicitudId` (una pantalla abierta ignora eventos de
+/// otras solicitudes activas del mismo tenant).
+///
+/// Cuando `hasAudio` es true, `audioUrl` apunta al endpoint del backend
+/// que devuelve los bytes (requiere Authorization). Los otros campos
+/// (`audioContentType`, `audioDurationMs`, `audioSizeBytes`) permiten
+/// renderizar la burbuja sin hacer HEAD previo al server.
 class ChatMessageEvent {
   const ChatMessageEvent({
     required this.solicitudId,

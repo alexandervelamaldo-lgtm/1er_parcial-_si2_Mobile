@@ -166,10 +166,17 @@ class ChatSolicitudService {
     return (data['marked'] as num?)?.toInt() ?? 0;
   }
 
-  /// Sube una nota de voz al chat como multipart. [file] es el archivo
-  /// grabado local por `record` (extensión .m4a/.aac típicamente).
-  /// [durationMs] es opcional pero recomendado para mostrar duración en la
-  /// burbuja de destino sin decodear el audio.
+  /// Sube una nota de voz al chat como multipart.
+  ///
+  /// - [file]: archivo local generado por el paquete `record` (típicamente
+  ///   `.m4a` con codec AAC-LC).
+  /// - [contentType]: MIME del archivo. Debe estar en la whitelist del
+  ///   backend (`audio/mp4`, `audio/webm`, etc.).
+  /// - [durationMs]: opcional pero muy recomendado. Sin duración, el
+  ///   receptor tiene que decodear el audio para conocerla — con este
+  ///   valor la muestra directo en la burbuja.
+  /// - [tenantKey]: idem que en `listar` — el X-Tenant es necesario si
+  ///   el cliente vive en un tenant distinto al de la solicitud.
   Future<SolicitudChatMessage> enviarAudio({
     required String token,
     required int solicitudId,
@@ -178,18 +185,24 @@ class ChatSolicitudService {
     int? durationMs,
     String? tenantKey,
   }) async {
+    // MultipartRequest arma el body con boundary automáticamente. NO
+    // debemos poner Content-Type nosotros — http lo genera con el
+    // boundary correcto (`multipart/form-data; boundary=...`).
     final req = http.MultipartRequest(
       'POST',
       _uri('/solicitudes/$solicitudId/chat/audio'),
     );
     req.headers.addAll(_headers(token, tenantKey)
-      ..remove('Content-Type') // multipart lo pone http con boundary
+      ..remove('Content-Type')
       ..remove('Accept'));
     req.headers['Accept'] = 'application/json';
 
     if (durationMs != null && durationMs > 0) {
       req.fields['duration_ms'] = durationMs.toString();
     }
+    // El nombre del field ('archivo') debe coincidir con el parámetro
+    // `File(...)` del endpoint FastAPI. MediaType.parse maneja MIMEs con
+    // parámetros (`audio/webm;codecs=opus` no rompe).
     req.files.add(
       await http.MultipartFile.fromPath(
         'archivo',
@@ -206,9 +219,14 @@ class ChatSolicitudService {
     );
   }
 
-  /// Descarga los bytes de una nota de voz. Los usamos con audioplayers
-  /// (BytesSource) para saltear el problema de que http audio streaming
-  /// no acepta Authorization header en Android.
+  /// Descarga los bytes de una nota de voz.
+  ///
+  /// Por qué bytes y no streaming: `audioplayers` con `UrlSource` NO
+  /// acepta pasar headers custom en Android (limitación del ExoPlayer
+  /// subyacente). Como necesitamos mandar `Authorization` (endpoint
+  /// autenticado), la alternativa práctica es descargar todo el blob y
+  /// reproducirlo con `BytesSource`. Los audios son chicos (<2 MB), el
+  /// overhead es despreciable.
   Future<List<int>> descargarAudioBytes({
     required String token,
     required int solicitudId,

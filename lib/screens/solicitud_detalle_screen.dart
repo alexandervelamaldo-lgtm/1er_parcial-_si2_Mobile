@@ -306,16 +306,26 @@ class _SolicitudDetalleScreenState extends State<SolicitudDetalleScreen> {
       appBar: AppBar(
         title: Text('Solicitud #${widget.solicitudId}'),
         actions: [
-          // Chat en vivo con el otro lado. El cliente lo abre contra el
-          // técnico (si ya se asignó) o contra el taller (etapa previa).
-          // El backend valida acceso y devuelve 403 si el usuario no es
-          // participante autorizado.
+          // ── Botón de chat en vivo ────────────────────────────────────
+          // El chat cliente ↔ (taller o técnico asignado) vive en una
+          // pantalla separada — este IconButton es solo el punto de
+          // entrada. Reglas de visibilidad:
+          //   - Aparece si la solicitud ya tiene taller O técnico
+          //     asignado. Sin ninguno de los dos NO hay contraparte con
+          //     quien hablar y ocultarlo evita clicks muertos.
+          //   - El backend re-valida cada request (403 si el user no es
+          //     participante autorizado), así que este *ngIf es UX no
+          //     seguridad — mostrarlo por error no filtra información.
           if (detalle != null &&
               (detalle.tecnicoId != null || detalle.tallerId != null))
             IconButton(
               tooltip: detalle.tecnicoId != null ? 'Chat con el técnico' : 'Chat con el taller',
               icon: const Icon(Icons.chat_bubble_outline),
               onPressed: () {
+                // Solicitudes en estado FINAL entran al chat como solo-
+                // lectura — el usuario puede revisar el historial pero
+                // no puede seguir mandando mensajes. El backend también
+                // devuelve 409 en escrituras sobre estos estados.
                 final estado = detalle.estado.toUpperCase();
                 final readOnly = const {
                   'COMPLETADA',
@@ -324,7 +334,11 @@ class _SolicitudDetalleScreenState extends State<SolicitudDetalleScreen> {
                   'CANCELADA',
                 }.contains(estado);
                 // Rol del usuario en sesión → determina a quién llamamos
-                // "contraparte" en el header del chat.
+                // "contraparte" en el header del chat. La convención es:
+                //   - CLIENTE: ve al técnico si ya se asignó, si no al taller.
+                //   - TALLER/TECNICO: siempre ven al cliente del otro lado.
+                //   - Otros roles (admin/operador): fallback a 'cliente'
+                //     — el backend igual los frena con 403.
                 final roles = context.read<SessionProvider>().profile?.roles ?? const <String>[];
                 final soyCliente = roles.contains('CLIENTE');
                 final soyTaller = roles.contains('TALLER');
